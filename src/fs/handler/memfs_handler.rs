@@ -13,6 +13,7 @@ use dokan::{
     FillDataResult, FindData, FindStreamData, OperationInfo, OperationResult, VolumeInfo,
     IO_SECURITY_CONTEXT,
 };
+use url::Url;
 use winapi::{
     shared::{ntdef, ntstatus::*},
     um::winnt,
@@ -20,11 +21,12 @@ use winapi::{
 
 use crate::{
     fs::{
-        entry::{DirEntry, Entry, EntryName, FileEntry},
+        entry::{DirEntry, Entry, EntryName, FileEntry, HttpFileEntry},
         metadata::{AltStream, Stat},
     },
-    path::{self, FullName},
+    path::{self, FullName, StreamInfo, StreamType},
     security::SecurityDescriptor,
+    utils::access_flags_to_string,
 };
 
 use dokan_sys::win32::{
@@ -32,6 +34,7 @@ use dokan_sys::win32::{
     FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_IF, FILE_OVERWRITE, FILE_OVERWRITE_IF,
     FILE_SUPERSEDE,
 };
+use log::{error, info, trace, warn};
 use widestring::{U16CStr, U16CString, U16Str, U16String};
 
 use super::super::entry::EntryNameRef;
@@ -41,13 +44,16 @@ use super::EntryHandle;
 
 #[derive(Debug)]
 pub struct MemFsHandler {
+    pub url: Url,
     pub id_counter: AtomicU64,
     pub root: Arc<DirEntry>,
+    pub files: HashMap<EntryName, Entry>,
 }
 
 impl MemFsHandler {
-    pub fn new() -> Self {
+    pub fn new(url: Url) -> Self {
         Self {
+            url: url.clone(),
             id_counter: AtomicU64::new(1),
             root: Arc::new(DirEntry::new(Stat::new(
                 0,
@@ -55,6 +61,7 @@ impl MemFsHandler {
                 SecurityDescriptor::new_default().unwrap(),
                 Weak::new(),
             ))),
+            files: HashMap::new(),
         }
     }
 
@@ -70,9 +77,15 @@ impl MemFsHandler {
         creator_desc: winnt::PSECURITY_DESCRIPTOR,
         token: ntdef::HANDLE,
         parent: &Arc<DirEntry>,
-        children: &mut HashMap<EntryName, Entry>,
+        // children: &mut HashMap<EntryName, Entry>,
         is_dir: bool,
     ) -> OperationResult<CreateFileInfo<EntryHandle>> {
+        info!(
+            "create_new: {:?} {:?} {:?}",
+            name.file_name.to_string().unwrap(),
+            attrs,
+            delete_on_close
+        );
         if attrs & winnt::FILE_ATTRIBUTE_READONLY > 0 && delete_on_close {
             return Err(STATUS_CANNOT_DELETE);
         }
@@ -87,11 +100,41 @@ impl MemFsHandler {
             )?,
             Arc::downgrade(&parent),
         );
+        let file_name = name.file_name.to_string().unwrap();
+        let url = self
+            .url
+            .join(if name.file_name.is_empty() {
+                "index.html"
+            } else {
+                file_name.as_str()
+            })
+            .unwrap();
         let stream = if let Some(stream_info) = &name.stream_info {
             if stream_info.check_default(is_dir)? {
                 None
             } else {
-                let stream = Arc::new(RwLock::new(AltStream::new()));
+                // let file_name = name.file_name.to_string().unwrap();
+                // let _url = self.url.join(file_name.as_str()).unwrap();
+
+                let mut content = reqwest::blocking::get(url.clone())
+                    .and_then(|resp| resp.bytes())
+                    .unwrap_or_default();
+                if (file_name.ends_with("main_module.bootstrap.js")) {
+                    content = String::from_utf8_lossy(&content)
+                        .replace(
+                            "'$requireDigestsPath?entrypoint=main_module.bootstrap.js'",
+                            "'$requireDigestsPath$entrypoint=main_module.bootstrap.js'",
+                        ).into();
+                }
+                info!(
+                    "create_new: stream_info {:?}, {:}  url={:?}",
+                    file_name,
+                    name.file_name.is_empty(),
+                    url
+                );
+                let mut stream = AltStream::new();
+                stream.data.extend_from_slice(&content);
+                let stream = Arc::new(RwLock::new(stream));
                 assert!(stat
                     .alt_streams
                     .insert(EntryName(stream_info.name.to_owned()), Arc::clone(&stream))
@@ -99,16 +142,20 @@ impl MemFsHandler {
                 Some(stream)
             }
         } else {
+            info!("create_new: url={:?}", url.to_string());
             None
         };
         let entry = if is_dir {
             Entry::Directory(Arc::new(DirEntry::new(stat)))
         } else {
-            Entry::File(Arc::new(FileEntry::new(stat)))
+            let _entry = HttpFileEntry::new(stat, url.to_string());
+            _entry.update_data();
+            Entry::HttpFile(Arc::new(_entry))
         };
-        assert!(children
-            .insert(EntryName(name.file_name.to_owned()), entry.clone())
-            .is_none());
+
+        // assert!(self.files
+        //     .insert(EntryName(name.file_name.to_owned()), entry.clone())
+        //     .is_none());
         parent.stat.write().unwrap().update_mtime(SystemTime::now());
         let is_dir = is_dir && stream.is_some();
         Ok(CreateFileInfo {
@@ -143,193 +190,241 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for MemFsHandler {
         create_options: u32,
         info: &mut OperationInfo<'c, 'h, Self>,
     ) -> OperationResult<CreateFileInfo<Self::Context>> {
+        let file_name = U16CString::from_str(&file_name.to_string().unwrap().replace(
+            "$requireDigestsPath$entrypoint=main_module.bootstrap.js",
+            "$requireDigestsPath?entrypoint=main_module.bootstrap.js",
+        ))
+        .unwrap();
+        info!(
+            "create_file: {:?} {:?}  {}",
+            file_name.to_string().unwrap(),
+            create_disposition,
+            access_flags_to_string(desired_access)
+        );
         if create_disposition > FILE_MAXIMUM_DISPOSITION {
             return Err(STATUS_INVALID_PARAMETER);
         }
         let delete_on_close = create_options & FILE_DELETE_ON_CLOSE > 0;
-        let path_info = path::split_path(&self.root, file_name)?;
-        if let Some((name, parent)) = path_info {
-            let mut children = parent.children.write().unwrap();
-            if let Some(entry) = children.get(EntryNameRef::new(name.file_name)) {
-                let stat = entry.stat().read().unwrap();
-                let is_readonly = stat.attrs.value & winnt::FILE_ATTRIBUTE_READONLY > 0;
-                let is_hidden_system = stat.attrs.value & winnt::FILE_ATTRIBUTE_HIDDEN > 0
-                    && stat.attrs.value & winnt::FILE_ATTRIBUTE_SYSTEM > 0
-                    && !(file_attributes & winnt::FILE_ATTRIBUTE_HIDDEN > 0
-                        && file_attributes & winnt::FILE_ATTRIBUTE_SYSTEM > 0);
-                if is_readonly
-                    && (desired_access & winnt::FILE_WRITE_DATA > 0
-                        || desired_access & winnt::FILE_APPEND_DATA > 0)
-                {
-                    return Err(STATUS_ACCESS_DENIED);
-                }
-                if stat.delete_pending {
-                    return Err(STATUS_DELETE_PENDING);
-                }
-                if is_readonly && delete_on_close {
-                    return Err(STATUS_CANNOT_DELETE);
-                }
-                std::mem::drop(stat);
-                let ret = if let Some(stream_info) = &name.stream_info {
-                    if stream_info.check_default(entry.is_dir())? {
-                        None
-                    } else {
-                        let mut stat = entry.stat().write().unwrap();
-                        let stream_name = EntryNameRef::new(stream_info.name);
-                        if let Some(stream) =
-                            stat.alt_streams.get(stream_name).map(|s| Arc::clone(s))
-                        {
-                            if stream.read().unwrap().delete_pending {
-                                return Err(STATUS_DELETE_PENDING);
-                            }
-                            match create_disposition {
-                                FILE_SUPERSEDE | FILE_OVERWRITE | FILE_OVERWRITE_IF => {
-                                    if create_disposition != FILE_SUPERSEDE && is_readonly {
-                                        return Err(STATUS_ACCESS_DENIED);
-                                    }
-                                    stat.attrs.value |= winnt::FILE_ATTRIBUTE_ARCHIVE;
-                                    stat.update_mtime(SystemTime::now());
-                                    stream.write().unwrap().data.clear();
-                                }
-                                FILE_CREATE => return Err(STATUS_OBJECT_NAME_COLLISION),
-                                _ => (),
-                            }
-                            Some((stream, false))
-                        } else {
-                            if create_disposition == FILE_OPEN
-                                || create_disposition == FILE_OVERWRITE
-                            {
-                                return Err(STATUS_OBJECT_NAME_NOT_FOUND);
-                            }
-                            if is_readonly {
-                                return Err(STATUS_ACCESS_DENIED);
-                            }
-                            let stream = Arc::new(RwLock::new(AltStream::new()));
-                            stat.update_atime(SystemTime::now());
-                            assert!(stat
-                                .alt_streams
-                                .insert(EntryName(stream_info.name.to_owned()), Arc::clone(&stream))
-                                .is_none());
-                            Some((stream, true))
-                        }
-                    }
-                } else {
-                    None
-                };
-                if let Some((stream, new_file_created)) = ret {
-                    return Ok(CreateFileInfo {
-                        context: EntryHandle::new(entry.clone(), Some(stream), delete_on_close),
-                        is_dir: false,
-                        new_file_created,
-                    });
-                }
-                match entry {
-                    Entry::File(file) => {
-                        if create_options & FILE_DIRECTORY_FILE > 0 {
-                            return Err(STATUS_NOT_A_DIRECTORY);
-                        }
-                        match create_disposition {
-                            FILE_SUPERSEDE | FILE_OVERWRITE | FILE_OVERWRITE_IF => {
-                                if create_disposition != FILE_SUPERSEDE && is_readonly
-                                    || is_hidden_system
-                                {
-                                    return Err(STATUS_ACCESS_DENIED);
-                                }
-                                file.data.write().unwrap().clear();
-                                let mut stat = file.stat.write().unwrap();
-                                stat.attrs = Attributes::new(
-                                    file_attributes | winnt::FILE_ATTRIBUTE_ARCHIVE,
-                                );
-                                stat.update_mtime(SystemTime::now());
-                            }
-                            FILE_CREATE => return Err(STATUS_OBJECT_NAME_COLLISION),
-                            _ => (),
-                        }
-                        Ok(CreateFileInfo {
-                            context: EntryHandle::new(
-                                Entry::File(Arc::clone(&file)),
-                                None,
-                                delete_on_close,
-                            ),
-                            is_dir: false,
-                            new_file_created: false,
-                        })
-                    }
-                    Entry::Directory(dir) => {
-                        if create_options & FILE_NON_DIRECTORY_FILE > 0 {
-                            return Err(STATUS_FILE_IS_A_DIRECTORY);
-                        }
-                        match create_disposition {
-                            FILE_OPEN | FILE_OPEN_IF => Ok(CreateFileInfo {
-                                context: EntryHandle::new(
-                                    Entry::Directory(Arc::clone(&dir)),
-                                    None,
-                                    delete_on_close,
-                                ),
-                                is_dir: true,
-                                new_file_created: false,
-                            }),
-                            FILE_CREATE => Err(STATUS_OBJECT_NAME_COLLISION),
-                            _ => Err(STATUS_INVALID_PARAMETER),
-                        }
-                    }
-                }
-            } else {
-                if parent.stat.read().unwrap().delete_pending {
-                    return Err(STATUS_DELETE_PENDING);
-                }
-                let token = info.requester_token().unwrap();
-                if create_options & FILE_DIRECTORY_FILE > 0 {
-                    match create_disposition {
-                        FILE_CREATE | FILE_OPEN_IF => self.create_new(
-                            &name,
-                            file_attributes,
-                            delete_on_close,
-                            security_context.AccessState.SecurityDescriptor,
-                            token.as_raw_handle(),
-                            &parent,
-                            &mut children,
-                            true,
-                        ),
-                        FILE_OPEN => Err(STATUS_OBJECT_NAME_NOT_FOUND),
-                        _ => Err(STATUS_INVALID_PARAMETER),
-                    }
-                } else {
-                    if create_disposition == FILE_OPEN || create_disposition == FILE_OVERWRITE {
-                        Err(STATUS_OBJECT_NAME_NOT_FOUND)
-                    } else {
-                        self.create_new(
-                            &name,
-                            file_attributes | winnt::FILE_ATTRIBUTE_ARCHIVE,
-                            delete_on_close,
-                            security_context.AccessState.SecurityDescriptor,
-                            token.as_raw_handle(),
-                            &parent,
-                            &mut children,
-                            false,
-                        )
-                    }
-                }
-            }
-        } else {
-            if create_disposition == FILE_OPEN || create_disposition == FILE_OPEN_IF {
-                if create_options & FILE_NON_DIRECTORY_FILE > 0 {
-                    Err(STATUS_FILE_IS_A_DIRECTORY)
-                } else {
-                    Ok(CreateFileInfo {
-                        context: EntryHandle::new(
-                            Entry::Directory(Arc::clone(&self.root)),
-                            None,
-                            info.delete_on_close(),
-                        ),
-                        is_dir: true,
-                        new_file_created: false,
-                    })
-                }
-            } else {
-                Err(STATUS_INVALID_PARAMETER)
-            }
-        }
+        // let path_info = path::split_path(&self.root, file_name)?;
+        // if let Some((name, parent)) = path_info {
+        //     let mut children = parent.children.write().unwrap();
+        //     info!("create_file: name={:?} parent={:?}", name.file_name.to_string() ,parent.stat.read().unwrap().id);
+        //     // chick if the child is exist
+        //     if let Some(entry) = children.get(EntryNameRef::new(name.file_name)) {
+        //         // file exist
+        //         let stat = entry.stat().read().unwrap();
+        //         info!("create_file: found entry attrs={:#X}", stat.attrs.value);
+
+        //         let is_readonly = stat.attrs.value & winnt::FILE_ATTRIBUTE_READONLY > 0;
+        //         let is_hidden_system = stat.attrs.value & winnt::FILE_ATTRIBUTE_HIDDEN > 0
+        //             && stat.attrs.value & winnt::FILE_ATTRIBUTE_SYSTEM > 0
+        //             && !(file_attributes & winnt::FILE_ATTRIBUTE_HIDDEN > 0
+        //                 && file_attributes & winnt::FILE_ATTRIBUTE_SYSTEM > 0);
+        //         if is_readonly
+        //             && (desired_access & winnt::FILE_WRITE_DATA > 0
+        //                 || desired_access & winnt::FILE_APPEND_DATA > 0)
+        //         {
+        //             return Err(STATUS_ACCESS_DENIED);
+        //         }
+        //         if stat.delete_pending {
+        //             return Err(STATUS_DELETE_PENDING);
+        //         }
+        //         if is_readonly && delete_on_close {
+        //             return Err(STATUS_CANNOT_DELETE);
+        //         }
+        //         std::mem::drop(stat);
+        //         let ret = if let Some(stream_info) = &name.stream_info {
+        //             if stream_info.check_default(entry.is_dir())? {
+        //                 None
+        //             } else {
+        //                 let mut stat = entry.stat().write().unwrap();
+        //                 let stream_name = EntryNameRef::new(stream_info.name);
+        //                 if let Some(stream) =
+        //                     stat.alt_streams.get(stream_name).map(|s| Arc::clone(s))
+        //                 {
+        //                     if stream.read().unwrap().delete_pending {
+        //                         return Err(STATUS_DELETE_PENDING);
+        //                     }
+        //                     match create_disposition {
+        //                         FILE_SUPERSEDE | FILE_OVERWRITE | FILE_OVERWRITE_IF => {
+        //                             if create_disposition != FILE_SUPERSEDE && is_readonly {
+        //                                 return Err(STATUS_ACCESS_DENIED);
+        //                             }
+        //                             stat.attrs.value |= winnt::FILE_ATTRIBUTE_ARCHIVE;
+        //                             stat.update_mtime(SystemTime::now());
+        //                             stream.write().unwrap().data.clear();
+        //                         }
+        //                         FILE_CREATE => return Err(STATUS_OBJECT_NAME_COLLISION),
+        //                         _ => (),
+        //                     }
+        //                     Some((stream, false))
+        //                 } else {
+        //                     if create_disposition == FILE_OPEN
+        //                         || create_disposition == FILE_OVERWRITE
+        //                     {
+        //                         return Err(STATUS_OBJECT_NAME_NOT_FOUND);
+        //                     }
+        //                     if is_readonly {
+        //                         return Err(STATUS_ACCESS_DENIED);
+        //                     }
+        //                     let stream = Arc::new(RwLock::new(AltStream::new()));
+        //                     stat.update_atime(SystemTime::now());
+        //                     assert!(stat
+        //                         .alt_streams
+        //                         .insert(EntryName(stream_info.name.to_owned()), Arc::clone(&stream))
+        //                         .is_none());
+        //                     Some((stream, true))
+        //                 }
+        //             }
+        //         } else {
+        //             None
+        //         };
+        //         if let Some((stream, new_file_created)) = ret {
+        //             return Ok(CreateFileInfo {
+        //                 context: EntryHandle::new(entry.clone(), Some(stream), delete_on_close),
+        //                 is_dir: false,
+        //                 new_file_created,
+        //             });
+        //         }
+        //         match entry {
+        //             Entry::File(file) => {
+        //                 if create_options & FILE_DIRECTORY_FILE > 0 {
+        //                     return Err(STATUS_NOT_A_DIRECTORY);
+        //                 }
+        //                 match create_disposition {
+        //                     FILE_SUPERSEDE | FILE_OVERWRITE | FILE_OVERWRITE_IF => {
+        //                         if create_disposition != FILE_SUPERSEDE && is_readonly
+        //                             || is_hidden_system
+        //                         {
+        //                             return Err(STATUS_ACCESS_DENIED);
+        //                         }
+        //                         file.data.write().unwrap().clear();
+        //                         let mut stat = file.stat.write().unwrap();
+        //                         stat.attrs = Attributes::new(
+        //                             file_attributes | winnt::FILE_ATTRIBUTE_ARCHIVE,
+        //                         );
+        //                         stat.update_mtime(SystemTime::now());
+        //                     }
+        //                     FILE_CREATE => return Err(STATUS_OBJECT_NAME_COLLISION),
+        //                     _ => (),
+        //                 }
+        //                 Ok(CreateFileInfo {
+        //                     context: EntryHandle::new(
+        //                         Entry::File(Arc::clone(&file)),
+        //                         None,
+        //                         delete_on_close,
+        //                     ),
+        //                     is_dir: false,
+        //                     new_file_created: false,
+        //                 })
+        //             }
+        //             Entry::HttpFile(file) => {
+        //                 info!(
+        //                     "create_file: found http file {:#X}",
+        //                     file.stat.read().unwrap().attrs.value
+        //                 );
+        //                 if create_options & FILE_DIRECTORY_FILE > 0 {
+        //                     return Err(STATUS_FILE_IS_A_DIRECTORY);
+        //                 }
+        //                 match create_disposition {
+        //                     FILE_OPEN | FILE_OPEN_IF => Ok(CreateFileInfo {
+        //                         context: EntryHandle::new(
+        //                             Entry::HttpFile(Arc::clone(&file)),
+        //                             None,
+        //                             delete_on_close,
+        //                         ),
+        //                         is_dir: false,
+        //                         new_file_created: false,
+        //                     }),
+        //                     FILE_CREATE => Err(STATUS_OBJECT_NAME_COLLISION),
+        //                     _ => Err(STATUS_INVALID_PARAMETER),
+        //                 }
+        //             }
+        //             Entry::Directory(dir) => {
+        //                 if create_options & FILE_NON_DIRECTORY_FILE > 0 {
+        //                     return Err(STATUS_FILE_IS_A_DIRECTORY);
+        //                 }
+        //                 match create_disposition {
+        //                     FILE_OPEN | FILE_OPEN_IF => Ok(CreateFileInfo {
+        //                         context: EntryHandle::new(
+        //                             Entry::Directory(Arc::clone(&dir)),
+        //                             None,
+        //                             delete_on_close,
+        //                         ),
+        //                         is_dir: true,
+        //                         new_file_created: false,
+        //                     }),
+        //                     FILE_CREATE => Err(STATUS_OBJECT_NAME_COLLISION),
+        //                     _ => Err(STATUS_INVALID_PARAMETER),
+        //                 }
+        //             }
+        //         }
+        //     } else {
+        // file not exist
+        // if parent.stat.read().unwrap().delete_pending {
+        //     return Err(STATUS_DELETE_PENDING);
+        // }
+        let token = info.requester_token().unwrap();
+        // if create_options & FILE_DIRECTORY_FILE > 0 {
+        //     match create_disposition {
+        //         FILE_CREATE | FILE_OPEN_IF => self.create_new(
+        //             &name,
+        //             file_attributes,
+        //             delete_on_close,
+        //             security_context.AccessState.SecurityDescriptor,
+        //             token.as_raw_handle(),
+        //             &parent,
+        //             &mut children,
+        //             true,
+        //         ),
+        //         FILE_OPEN => Err(STATUS_OBJECT_NAME_NOT_FOUND),
+        //         _ => Err(STATUS_INVALID_PARAMETER),
+        //     }
+        // } else {
+        //     if create_disposition == FILE_OPEN || create_disposition == FILE_OVERWRITE {
+        //         Err(STATUS_OBJECT_NAME_NOT_FOUND)
+        //     } else {
+        // let name = self.root.children.read().unwrap().get(EntryNameRef::new(name.file_name)).unwrap();
+        let name = FullName {
+            file_name: U16Str::from_slice(file_name.as_slice()),
+            stream_info: Some(StreamInfo {
+                name: U16Str::from_slice(file_name.as_slice()),
+                type_: StreamType::Data,
+            }),
+        };
+        self.create_new(
+            &name,
+            file_attributes | winnt::FILE_ATTRIBUTE_ARCHIVE,
+            delete_on_close,
+            security_context.AccessState.SecurityDescriptor,
+            token.as_raw_handle(),
+            &self.root, //  &parent,
+            // &mut self.root.children.write().unwrap(),
+            // &mut self.files,
+            false,
+        )
+        //     }
+        // }
+        //     }
+        // } else {
+        //     if create_disposition == FILE_OPEN || create_disposition == FILE_OPEN_IF {
+        //         if create_options & FILE_NON_DIRECTORY_FILE > 0 {
+        //             Err(STATUS_FILE_IS_A_DIRECTORY)
+        //         } else {
+        //             Ok(CreateFileInfo {
+        //                 context: EntryHandle::new(
+        //                     Entry::Directory(Arc::clone(&self.root)),
+        //                     None,
+        //                     info.delete_on_close(),
+        //                 ),
+        //                 is_dir: true,
+        //                 new_file_created: false,
+        //             })
+        //         }
+        //     } else {
+        //         Err(STATUS_INVALID_PARAMETER)
+        //     }
+        // }
     }
 
     fn close_file(
@@ -338,6 +433,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for MemFsHandler {
         _info: &OperationInfo<'c, 'h, Self>,
         context: &'c Self::Context,
     ) {
+        info!("close_file: {:?}", _file_name.to_string().unwrap());
         let mut stat = context.entry.stat().write().unwrap();
         if let Some(mtime) = context.mtime_delayed.lock().unwrap().clone() {
             if mtime > stat.mtime {
@@ -359,6 +455,12 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for MemFsHandler {
         _info: &OperationInfo<'c, 'h, Self>,
         context: &'c Self::Context,
     ) -> OperationResult<u32> {
+        let _file_name = U16CString::from_str(&_file_name.to_string().unwrap().replace(
+            "$requireDigestsPath$entrypoint=main_module.bootstrap.js",
+            "$requireDigestsPath?entrypoint=main_module.bootstrap.js",
+        ))
+        .unwrap();
+        info!("read_file: {:?}", _file_name.to_string().unwrap());
         let mut do_read = |data: &Vec<_>| {
             let offset = offset as usize;
             let len = std::cmp::min(buffer.len(), data.len() - offset);
@@ -370,6 +472,12 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for MemFsHandler {
             Ok(do_read(&stream.read().unwrap().data))
         } else if let Entry::File(file) = &context.entry {
             Ok(do_read(&file.data.read().unwrap()))
+        } else if let Entry::HttpFile(http_file) = &context.entry {
+            let data = http_file.get_data().unwrap();
+            let offset = offset as usize;
+            let len = std::cmp::min(buffer.len(), data.len().saturating_sub(offset));
+            buffer[..len].copy_from_slice(&data[offset..offset + len]);
+            Ok(len as u32)
         } else {
             Err(STATUS_INVALID_DEVICE_REQUEST)
         }
@@ -432,6 +540,10 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for MemFsHandler {
         _info: &OperationInfo<'c, 'h, Self>,
         context: &'c Self::Context,
     ) -> OperationResult<FileInfo> {
+        info!(
+            "get_file_information: {:?}",
+            _file_name.to_string().unwrap()
+        );
         let stat = context.entry.stat().read().unwrap();
         let alt_stream = context.alt_stream.read().unwrap();
         Ok(FileInfo {
@@ -444,6 +556,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for MemFsHandler {
             } else {
                 match &context.entry {
                     Entry::File(file) => file.data.read().unwrap().len() as u64,
+                    Entry::HttpFile(http_file) => http_file.data_len() as u64,
                     Entry::Directory(_) => 0,
                 }
             },
@@ -459,6 +572,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for MemFsHandler {
         _info: &OperationInfo<'c, 'h, Self>,
         context: &'c Self::Context,
     ) -> OperationResult<()> {
+        info!("find_files: {:?}", _file_name.to_string().unwrap());
         if context.alt_stream.read().unwrap().is_some() {
             return Err(STATUS_INVALID_DEVICE_REQUEST);
         }
@@ -474,6 +588,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for MemFsHandler {
                     file_size: match v {
                         Entry::File(file) => file.data.read().unwrap().len() as u64,
                         Entry::Directory(_) => 0,
+                        Entry::HttpFile(http_file) => http_file.data_len() as u64,
                     },
                     file_name: U16CString::from_ustr(&k.0).unwrap(),
                 })
@@ -909,6 +1024,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for MemFsHandler {
         _info: &OperationInfo<'c, 'h, Self>,
         context: &'c Self::Context,
     ) -> OperationResult<()> {
+        info!("find_streams: {:?}", _file_name.to_string().unwrap());
         if let Entry::File(file) = &context.entry {
             fill_find_stream_data(&FindStreamData {
                 size: file.data.read().unwrap().len() as i64,

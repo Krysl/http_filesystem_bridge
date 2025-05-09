@@ -5,7 +5,7 @@ use std::{
 use widestring::{U16Str, U16String};
 
 #[derive(Debug, Eq)]
-pub struct EntryNameRef(U16Str);
+pub struct EntryNameRef(pub U16Str);
 
 fn u16_tolower(c: u16) -> u16 {
     if c >= 'A' as u16 && c <= 'Z' as u16 {

@@ -10,6 +10,12 @@ clap = "4.5.4"
 ctrlc = "3.4.4"
 dokan = "0.3.1"
 dokan-sys = "0.3.1"
+env_logger = "0.11.8"
 http = "1.1.0"
+log = "0.4.27"
+reqwest = { version = "0.12.15", features = ["blocking", "json"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+url = "2.5.4"
 widestring = "0.4.3"
 winapi = "0.3.9"

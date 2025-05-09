@@ -1,0 +1,54 @@
+{
+  // 使用 IntelliSense 了解相关属性。 
+  // 悬停以查看现有属性的描述。
+  // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug executable 'http_fs'",
+      "cargo": {
+        "args": [
+          "build",
+          "--bin=http_fs",
+          "--package=http_fs"
+        ],
+        "filter": {
+          "name": "http_fs",
+          "kind": "bin"
+        }
+      },
+      "args": [
+        "-d",
+        "--mount-point",
+        "Z:",
+        "-u",
+        "http://localhost:11049"
+      ],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug unit tests in executable 'http_fs'",
+      "cargo": {
+        "args": [
+          "test",
+          "--no-run",
+          "--bin=http_fs",
+          "--package=http_fs"
+        ],
+        "filter": {
+          "name": "http_fs",
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_LOG": "info"
+      }
+    }
+  ]
+}

@@ -25,8 +25,9 @@ impl Drop for PrivateObjectSecurity {
 	}
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct SecurityDescriptor {
+	#[serde(skip)]
 	desc_ptr: winnt::PSECURITY_DESCRIPTOR,
 }
 

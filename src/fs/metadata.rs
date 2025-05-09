@@ -9,7 +9,7 @@ use winapi::um::winnt;
 use super::entry::{DirEntry, EntryName};
 use crate::security::SecurityDescriptor;
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct AltStream {
     pub handle_count: u32,
     pub delete_pending: bool,
@@ -25,8 +25,7 @@ impl AltStream {
         }
     }
 }
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, serde::Serialize)]
 pub struct Attributes {
     pub value: u32,
 }
@@ -34,6 +33,7 @@ pub struct Attributes {
 impl Attributes {
     pub fn new(attrs: u32) -> Self {
         const SUPPORTED_ATTRS: u32 = winnt::FILE_ATTRIBUTE_ARCHIVE
+            | winnt::FILE_ATTRIBUTE_NORMAL
             | winnt::FILE_ATTRIBUTE_HIDDEN
             | winnt::FILE_ATTRIBUTE_NOT_CONTENT_INDEXED
             | winnt::FILE_ATTRIBUTE_OFFLINE
