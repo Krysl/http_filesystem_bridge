@@ -464,7 +464,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for MemFsHandler {
                 ignore::Match::Whitelist(_) => {}
             }
         } else {
-            error!("[{index}] create_file: no ignore {:?}", _file_name);
+            info!("[{index}] create_file: no ignore {:?}", _file_name);
         }
         if create_disposition > FILE_MAXIMUM_DISPOSITION {
             return Err(STATUS_INVALID_PARAMETER);
@@ -499,7 +499,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for MemFsHandler {
                     stat.attrs.value
                 );
 
-                let is_readonly = stat.attrs.value & winnt::FILE_ATTRIBUTE_READONLY > 0;
+                let is_readonly = true;//stat.attrs.value & winnt::FILE_ATTRIBUTE_READONLY > 0;
                 let is_hidden_system = stat.attrs.value & winnt::FILE_ATTRIBUTE_HIDDEN > 0
                     && stat.attrs.value & winnt::FILE_ATTRIBUTE_SYSTEM > 0
                     && !(file_attributes & winnt::FILE_ATTRIBUTE_HIDDEN > 0

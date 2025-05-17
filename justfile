@@ -27,5 +27,5 @@ run:
     && cargo run -- \
       --mount-point Z: \
       -u http://localhost:5223 \
-      -d \
-      -j tests/tree.json
+      -j tests/tree.json \
+      -i
