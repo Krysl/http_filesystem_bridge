@@ -14,6 +14,8 @@ pub struct AltStream {
     pub handle_count: u32,
     pub delete_pending: bool,
     pub data: Vec<u8>,
+    pub content_length: u64,
+    pub ctime: SystemTime,
 }
 
 impl AltStream {
@@ -22,6 +24,8 @@ impl AltStream {
             handle_count: 0,
             delete_pending: false,
             data: Vec::new(),
+            content_length: 0,
+            ctime: SystemTime::now(),
         }
     }
 }

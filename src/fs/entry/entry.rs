@@ -89,38 +89,20 @@ impl FileEntry {
 #[derive(Debug)]
 pub struct HttpFileEntry {
     pub stat: RwLock<Stat>,
-    pub url: String,
+    pub download_pending: RwLock<bool>,
     data_cache: RwLock<Option<Vec<u8>>>,
 }
 
+unsafe impl Send for HttpFileEntry {}
+unsafe impl Sync for HttpFileEntry {}
+
 impl HttpFileEntry {
-    pub fn new(stat: Stat, url: String) -> Self {
+    pub fn new(stat: Stat) -> Self {
         Self {
             stat: RwLock::new(stat),
-            url,
+            download_pending: RwLock::new(true),
             data_cache: RwLock::new(None),
         }
-    }
-    pub fn update_data(&self) -> usize {
-        let mut cache = self.data_cache.write().unwrap();
-        if cache.is_none() {
-            if let Ok(response) = reqwest::blocking::get(&self.url) {
-                if let Ok(bytes) = response.bytes() {
-                    let bytes = if self.url.ends_with("main_module.bootstrap.js") {
-                        String::from_utf8_lossy(&bytes)
-                            .replace(
-                                "'$requireDigestsPath?entrypoint=main_module.bootstrap.js'",
-                                "'$requireDigestsPath$entrypoint=main_module.bootstrap.js'",
-                            )
-                            .into_bytes()
-                    } else {
-                        bytes.to_vec()
-                    };
-                    *cache = Some(bytes);
-                }
-            }
-        }
-        cache.as_ref().map_or(0, |data| data.len())
     }
     pub fn data_len(&self) -> usize {
         self.data_cache
@@ -138,7 +120,7 @@ impl HttpFileEntry {
 #[derive(Debug)]
 pub struct DirEntry {
     pub stat: RwLock<Stat>,
-    pub children: RwLock<HashMap<EntryName, Entry>>,
+    pub children: RwLock<HashMap<EntryName, Arc<Entry>>>,
 }
 
 impl DirEntry {

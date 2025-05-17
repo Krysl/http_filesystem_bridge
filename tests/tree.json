@@ -1,0 +1,22 @@
+{
+  "name": "/",
+  "children": [
+    {
+      "name": "_locales/",
+      "children": [
+        {
+          "name": "en/",
+          "children": []
+        },
+        {
+          "name": "zh/",
+          "children": []
+        },
+        {
+          "name": "zh_CN/",
+          "children": []
+        }
+      ]
+    }
+  ]
+}

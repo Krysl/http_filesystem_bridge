@@ -1,3 +1,6 @@
+use dokan_sys::win32::{
+    FILE_CREATE, FILE_OPEN, FILE_OPEN_IF, FILE_OVERWRITE, FILE_OVERWRITE_IF, FILE_SUPERSEDE,
+};
 use winapi::um::winnt;
 
 pub fn access_flags_to_string(desired_access: winnt::ACCESS_MASK) -> String {
@@ -62,5 +65,17 @@ pub fn access_flags_to_string(desired_access: winnt::ACCESS_MASK) -> String {
             access_flags.push("FILE_WRITE_ATTRIBUTES");
         }
         access_flags.join(" | ") // 将权限标志拼接为字符串
+    }
+}
+
+pub fn create_disposition_to_string(create_disposition: u32) -> &'static str {
+    match create_disposition {
+        FILE_SUPERSEDE => "FILE_SUPERSEDE",
+        FILE_OPEN => "FILE_OPEN",
+        FILE_CREATE => "FILE_CREATE",
+        FILE_OPEN_IF => "FILE_OPEN_IF",
+        FILE_OVERWRITE => "FILE_OVERWRITE",
+        FILE_OVERWRITE_IF => "FILE_OVERWRITE_IF",
+        _ => "UNKNOWN_CREATE_DISPOSITION",
     }
 }

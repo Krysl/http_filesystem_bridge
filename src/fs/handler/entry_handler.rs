@@ -1,3 +1,4 @@
+use log::debug;
 use std::{
     borrow::Borrow,
     sync::{
@@ -11,9 +12,11 @@ use crate::fs::metadata::{AltStream, Stat};
 
 use super::super::entry::{Entry, EntryNameRef};
 
+#[allow(unused)]
 #[derive(Debug)]
 pub struct EntryHandle {
-    pub entry: Entry,
+    pub index: u64,
+    pub entry: Arc<Entry>,
     pub alt_stream: RwLock<Option<Arc<RwLock<AltStream>>>>,
     pub delete_on_close: bool,
     pub mtime_delayed: Mutex<Option<SystemTime>>,
@@ -23,9 +26,11 @@ pub struct EntryHandle {
     pub atime_enabled: AtomicBool,
 }
 
+// static mut INDEX: u32 = 0;
 impl EntryHandle {
     pub fn new(
-        entry: Entry,
+        index: u64,
+        entry: Arc<Entry>,
         alt_stream: Option<Arc<RwLock<AltStream>>>,
         delete_on_close: bool,
     ) -> Self {
@@ -33,7 +38,9 @@ impl EntryHandle {
         if let Some(s) = &alt_stream {
             s.write().unwrap().handle_count += 1;
         }
+        debug!("EntryHandle::new: handle index={index}");
         Self {
+            index: index,
             entry,
             alt_stream: RwLock::new(alt_stream),
             delete_on_close,
@@ -59,6 +66,7 @@ impl EntryHandle {
         }
     }
 
+    #[allow(unused)]
     pub fn update_mtime(&self, stat: &mut Stat, mtime: SystemTime) {
         self.update_atime(stat, mtime);
         if self.mtime_enabled.load(Ordering::Relaxed) {

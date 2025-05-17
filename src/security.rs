@@ -257,7 +257,8 @@ impl SecurityDescriptor {
 			Ok(len)
 		}
 	}
-
+	
+	#[allow(unused)]
 	pub fn set_security_info(
 		&mut self,
 		sec_info: winnt::SECURITY_INFORMATION,

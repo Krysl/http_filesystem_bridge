@@ -21,11 +21,13 @@ My knowledge of Rust is still at a beginner level, and much of the code was modi
 
 ```
 # http_fs.exe --help
-Usage: http_fs.exe [OPTIONS] --mount-point <MOUNT_POINT> --url <URL>
+Usage: http_fs.exe [OPTIONS] --mount-point <MOUNT_POINT> --url <URL> --dir_tree <DIR_TREE>
 
 Options:
   -m, --mount-point <MOUNT_POINT>  Mount point path.
   -u, --url <URL>                  http url.
+  -j, --dir_tree <DIR_TREE>        dir tree in json format.
+  -i, --fs-ignore[=<BOOL>]         ignore files using .fsignore .ignore or .gitignore. [default: false] [possible values: true, false]
   -t, --single-thread              Force a single thread. Otherwise Dokan will allocate the number of threads regarding the workload.
   -d, --dokan-debug                Enable Dokan's debug output.
   -r, --removable                  Mount as a removable drive.
@@ -34,7 +36,73 @@ Options:
 ```
 
 #### example
-`set RUST_LOG=error && cargo run -- --mount-point Z: -u http://localhost:5223 -d`
+`set RUST_LOG=error && cargo run -- --mount-point Z: -u http://localhost:5223  -j tree.json -i`
+Parameter explanation:
+
+1. `--mount-point Z:`: 
+
+    <img width="200" alt="Image" src="https://github.com/user-attachments/assets/b9e23cd1-8ead-4570-9bb5-75c3165be30c" />
+
+2. `-j tree.json`
+    This option is used to generate the default directory.
+
+    Using a JSON file, show the directory structure 
+    (Currently only simple directories are supported, and directories need to end with a `/`.)
+
+
+    ```json
+    {
+      "name": "/",
+      "children": [
+        {
+          "name": "_locales/",
+          "children": [
+            {
+              "name": "en/",
+              "children": []
+            },
+            {
+              "name": "zh/",
+              "children": []
+            },
+            {
+              "name": "zh_CN/",
+              "children": []
+            }
+          ]
+        }
+      ]
+    }
+    ```
+
+3. `-i`
+    Enable file ignoring.
+
+    This memory file system will, by default, create any file accesses to the virtual file system and then attempt to download the files from the HTTP server. 
+
+    Some background processes may also access files that do not actually exist, which could be a waste of CPU and network bandwidth. 
+
+    Therefore, files that are not needed can be blocked using a syntax similar to gitignore.
+
+    Additionally, some programs may behave differently due to differences in directory structure. For example, a Chrome extension may attempt to access the _metadata/ folder, which can be blocked as needed.
+
+    ```gitignore
+    .git/
+    .git
+    .git.*
+    refs
+    refs.*
+    config
+    objects
+    HEAD
+    commondir
+    AutoRun.inf
+    autorun.inf
+    _metadata/
+    _metadata/*
+    *.exe
+    *.lnk
+    ```
 
 #### use with flutter web(wasm) developing
 1. run in flutter project first: (js version is too slow for loading the .js files)
@@ -69,7 +137,7 @@ Options:
 
 2. start the bridge using the same port
 
-    `http_fs.exe --mount-point Z: -u http://localhost:5223 -d`
+    `http_fs.exe --mount-point Z: -u http://localhost:5223 -j tree.json -i`
 
 3. open the `file:///Z:/index.html` in chrome launched by Flutter 
 

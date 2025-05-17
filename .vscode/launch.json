@@ -20,13 +20,21 @@
         }
       },
       "args": [
-        "-d",
+        // "-d",
         "--mount-point",
         "Z:",
         "-u",
-        "http://localhost:11049"
+        "http://localhost:5223",
+        "-j",
+        "tests\\tree.json",
+        "-i"
       ],
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_LOG": "debug",
+        "TERM": "xterm-256color",
+      },
+      "console": "externalTerminal"
     },
     {
       "type": "lldb",

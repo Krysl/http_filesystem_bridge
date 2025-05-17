@@ -1,0 +1,15 @@
+.git/
+.git
+.git.*
+refs
+refs.*
+config
+objects
+HEAD
+commondir
+AutoRun.inf
+autorun.inf
+_metadata/
+_metadata/*
+*.exe
+*.lnk
