@@ -23,8 +23,20 @@ use url::Url;
 use widestring::{U16CString, U16String};
 
 fn command() -> Command {
-    Command::new("dokan-rust memfs example")
+    Command::new("Http FileSystem bridge")
+        .version(env!("CARGO_PKG_VERSION"))
         .author(env!("CARGO_PKG_AUTHORS"))
+        .help_template(
+"\
+{name} {version}
+{about-with-newline}
+USAGE:
+    {usage}
+
+OPTIONS:
+{options}
+"
+        )
         .arg(
             Arg::new("mount_point")
                 .short('m')
